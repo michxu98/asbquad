@@ -1,0 +1,102 @@
+%% Using a linearization of the drone dynamics about hover to design an LQR  hover controller
+% ===============================
+% original version by:
+% AUTHOR Fabian Riether
+% CREATE DATE 2015/10/30
+% PURPOSE This code assists in designing an LQR hover controller
+
+%Load drone parameters from RoboticsToolbox
+mdl_quadrotor
+parameters_estimationcontrol
+
+
+%% 1) Linearize Drone Model
+%Use ComplexDrone.slx and Simulink's ControlDesign/Linear Analysis
+%to find a linear plant model.
+
+ A = linsys1.a;
+ B = linsys1.b;
+ C = eye(12);
+ D = zeros(12,4);
+
+ 
+ %Note: We linearized about hover. This also implies: The control "policy"
+ %to correct a position error was derived under a yaw-angle of zero!
+ %If your drone yaw-drifts 90 deg and runs into a world-X-error, it will
+ %still believe that pitch is the right answer to correct for this position error! You can compensate for this by
+ %rotation the X-Y-error by the current yaw angle.
+
+%% 2) Setup Bryson's rule 
+
+%Limits on states
+pos_max     = [0.5 0.5 0.5];
+att_max     = [0.3 0.3 0.3];
+dpos_max    = [1 1 1];
+datt_max    = [1 1 1];
+
+%Limits on control input
+motor_cmd_max = 500;
+thrust_max = motor_cmd_max/quadEDT.thrustToMotorcommand;
+Ts2Q = inv(controlHelperParams.Q2Ts);
+
+T_max = Ts2Q(1,:)*thrust_max*[1 1 1 1]';
+Tau_yaw_max = Ts2Q(2,:)*thrust_max*[1 0 1 0]';
+Tau_pitch_max = Ts2Q(3,:)*thrust_max*[0 0 1 1]';
+Tau_roll_max = Ts2Q(4,:)*thrust_max*[0 1 1 0]';
+
+%% Cost weights on states
+
+%weights for each of the three positions(attitude)
+
+pos_xyz_w = [0.05 0.05 1];
+
+%weights for each of the three angles of orientations(attitude)
+orient_ypr_w = [0.1 0.1 0.1];
+
+%weights for each of the three velocities of position
+dpos_xyz_w = [0.1 0.05 0.05];
+
+%weights for each of the three angular rates of orientations(attitude)
+dorient_pqr_w = [ 0.1 0.1 0.01];
+
+%dorient_pqr_w = [ 0.4 0.4 0.01];
+
+%overall ontrol effort (don't rename it to "rho")
+rho_w = 5;
+%rho_w = 4;
+
+% weights for total thrust and torques (yaw, pitch, roll)
+u_w = [1 0.05 2 2];
+
+%% Pack weights and limits on state costs
+weights = [pos_xyz_w orient_ypr_w dpos_xyz_w dorient_pqr_w  ];
+maxs    = [pos_max att_max dpos_max datt_max];
+u_maxs = [T_max Tau_yaw_max Tau_pitch_max Tau_roll_max];
+
+weights =  weights/sqrt(sum(weights.^2));
+
+% what normalization would be:
+% maxs = maxs/sqrt(sum(maxs.^2));
+% u_w = u_w/sqrt(sum(u_w.^2));
+
+%% 3) Compute Q and R cost matrices
+Q           = diag((weights.^2)./(maxs.^2));
+R           = rho_w*diag(u_w.^2./(u_maxs.^2));
+
+%% 4) Compute K_LQR
+K_lqr       = lqr(A,B,Q,R);
+
+ns = size(A,1);
+z = zeros(ns,1);
+Qnew = Q;
+Rnew = R;
+
+Cnew = z';
+Cnew(3) = 1;
+Anew = [A z; Cnew 0];
+Bnew = [B; zeros(1,4);];
+
+w = 0.0001;
+
+Qnew = [Q z; z' w];
+K_lqr = lqr(Anew,Bnew,Qnew,Rnew);
